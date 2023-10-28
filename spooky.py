@@ -153,7 +153,14 @@ class Chat_Interface():
 
     def ask(self, question, return_queue):
         self.chat_queue.put((question, return_queue))
-    
+
+    def get_message_list(self):
+        message_history = []
+        for message in self.messages:
+            if message["role"] != "system":
+                message_history.append((message["role"], message["content"]))
+        return message_history
+
     def is_thinking(self):
         return self.thinking_event.is_set()
 
@@ -228,6 +235,8 @@ chat.start()
 
 class App:
     response_queue = queue.Queue(1)
+
+    active_show = "Rainbow"
     
     def __init__(self, tkroot):
         self.root = tkroot
@@ -257,22 +266,38 @@ class App:
     
     def send_message(self, event=None):
         question = self.entry.get()
-        self.text.insert(tk.END, "You: " + question + "\n")
         chat.ask(question, self.response_queue)
         self.entry.delete(0, tk.END)
-        show_control.switch_show("Thinking")
+        root.focus()
+        
 
     def update(self):          
-        if self.response_queue.empty() == False:
-            response = self.response_queue.get()
-            self.text.insert(tk.END, "Pumpkin: " + response + "\n")
-            show_control.switch_show("Rainbow")
+        if self.frame.focus_get() == self.entry:
+            self.active_show = "Rainbow"
+        else:
+            self.active_show = "TwoAxis"
         
+        if chat.is_thinking():
+            show_control.switch_show("Thinking")
+        else:
+            show_control.switch_show(self.active_show)
+
+        
+        
+        # Refresh Message List
+        self.text.delete(1.0, tk.END)
+        message_list = chat.get_message_list()
+        for message in message_list:
+            roles = { "user": "You", "assistant": "Pumpkin"}
+            self.text.insert(tk.END, roles.get(message[0]) + ": " + message[1] + "\n")
+    
+        # Refresh Image
         display_points = np.kron(output_points, np.ones((DISPLAY_SCALE, DISPLAY_SCALE, 1), dtype=np.uint8))
         self.image = Image.fromarray(display_points)
         self.photo = ImageTk.PhotoImage(image=self.image)
         self.label.configure(image=self.photo)
 
+        # Refresh Neopixels
         arduino.draw(output_points)
 
         self.root.after(25, self.update)
