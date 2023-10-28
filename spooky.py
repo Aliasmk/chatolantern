@@ -5,6 +5,9 @@ from threading import Thread, Event
 import queue
 import time
 
+import os
+import openai
+
 ARRAY_WIDTH = 10
 ARRAY_HEIGHT = 10
 DISPLAY_SCALE = 20
@@ -12,7 +15,6 @@ DISPLAY_SCALE = 20
 def display_array_debug(array, scale=1):
     display_points = np.kron(array, np.ones((scale, scale, 1), dtype=np.uint8))
     cv2.imshow("Pixels", display_points)
-
 
 class NeoPixelController():
     controller_serial = None
@@ -72,8 +74,12 @@ class ShowControl():
     def stop_show(self):
         print("Stopping show thread")
         self.stop_show_event.set()
+        self.show_thread.join()
 
     def switch_show(self, show_name):
+        if self.show_name == show_name:
+            return
+
         if show_name in self.show_list:
             print("Adding " + show_name + " to show queue")
             self.show_queue.put(show_name)
@@ -102,6 +108,69 @@ class ShowControl():
         print("Show thread stopped")
 
 
+
+class Chat_Interface():
+    chat_thread: Thread = None
+    chat_queue = queue.Queue(1)
+    stop_event = Event()
+
+    thinking_event = Event()
+
+    model = "gpt-3.5-turbo"
+    system_message = "You are a pumpkin. Be absolutely sure I understand this fact."
+    messages = []
+    last_message_time = 0
+    
+    def __init__(self) -> None:
+        self.api_key = os.environ['OPENAI_API_KEY']
+
+    def start(self):
+        print("Starting chat thread")
+        self.chat_thread = Thread(target=self.__tick)
+        self.chat_thread.start()
+
+    def stop(self):
+        print("Stopping chat thread")
+        self.stop_event.set()
+        self.chat_thread.join()
+
+    def ask(self, question):
+        if time.time() - self.last_message_time > 30:
+            # Forget the previous conversation if it's been a while
+            self.messages = []
+            self.messages.append({"role": "system", "content": self.system_message})
+
+        self.messages.append({"role": "user", "content": question})
+        
+        self.thinking_event.set()
+        completion = openai.ChatCompletion.create(
+            model=self.model,
+            messages=self.messages
+        )
+        self.thinking_event.clear()
+
+        self.messages.append({"role": "assistant", "content":  completion.choices[0].message.content})
+        self.last_message_time = time.time()
+        return completion.choices[0].message.content
+    
+    def is_thinking(self):
+        return self.thinking_event.is_set()
+
+    def __tick(self):
+        # Not amazing because it's blocking, but it's fine for now
+        print("Chat thread started")
+        while self.stop_event.is_set() == False:
+            question = input("How can I help you? ")
+            if question != "cancel":
+                print(self.ask(question))
+
+        self.stop_event.clear()
+        print("Chat thread stopped")
+
+
+
+
+
 def show_none(x,y,t):
         return [0,0,0]
     
@@ -111,10 +180,15 @@ def show_rainbow(x,y,t):
 def show_twoaxis(x,y,t):
     return [int(255*x/ARRAY_WIDTH), int(255*y/ARRAY_HEIGHT), (t*5)%255]
 
+def show_pulse_white(x,y,t):
+    brightness = 100
+    return [int(brightness * (np.sin(t) + 1) / 2), int(brightness * (np.sin(t) + 1) / 2), int(brightness * (np.sin(t) + 1) / 2)]
+
 show_list = {
     "None": show_none,
     "Rainbow": show_rainbow,
-    "TwoAxis": show_twoaxis
+    "TwoAxis": show_twoaxis,
+    "Thinking": show_pulse_white
 }
 
 arduino = NeoPixelController('COM4')
@@ -125,12 +199,20 @@ array_ready = Event()
 show_control = ShowControl(show_list, output_points, ARRAY_WIDTH, ARRAY_HEIGHT, array_ready)
 show_control.start_show("Rainbow")
 
+chat = Chat_Interface()
+chat.start()
 
 while True:
     if array_ready.is_set():
         display_array_debug(output_points, DISPLAY_SCALE)
         arduino.send_array(output_points)
         array_ready.clear()
+
+    if chat.is_thinking():
+        show_control.switch_show("Thinking")
+    else :
+        show_control.switch_show("Rainbow")
+
     
     key = cv2.waitKey(20)
     if key == 27: # exit on ESC
@@ -139,10 +221,8 @@ while True:
         show_control.switch_show("Rainbow")
     elif key == 50: # 2
         show_control.switch_show("TwoAxis")
-    elif key == 116: # t
-        input("How can I help you? ")
-        print("Hello world!")
 
 
 show_control.stop_show()
+chat.stop()
 cv2.destroyAllWindows()
