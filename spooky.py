@@ -274,15 +274,15 @@ class Chat_Interface():
 class Voice_Control(Thread):    
     stop_event = Event()
 
-
-    request_queue = queue.Queue(-1)
     counter_lock = Lock()
     sequence_number = 0
     
-    audio_thread: Thread = None
-    audio_queue = queue.Queue(1)
-    pending_audio = []
-    play_sequence = 0
+    audio_queue = queue.Queue(-1)
+    audio_complete_event = Event()
+    audio_playing_event = Event()
+    
+    timeline = {}
+    timeline_position = 0
     
 
     voice_ids = {
@@ -292,7 +292,6 @@ class Voice_Control(Thread):
 
     def __init__(self):
         super().__init__()
-        self.audio_thread = Thread(target=self.play_audio)
 
     def stop(self):
         self.stop_event.set()
@@ -318,25 +317,35 @@ class Voice_Control(Thread):
             "authorization": "Bearer KPtgCuQzlgDuVkGNItgpYPbLmcISsKwOrCZWG75BAyBChuLhM1u4ZxV7fJL5Q6qX"
         }
 
-        print( "json: " + str(payload), "headers: " + str(headers))
-
-        audio_file = requests.post(url, json=payload, headers=headers)
-        print(audio_file)
-        if audio_file.status_code == 200 or audio_file.status_code == 201:
+        audio_resource = requests.post(url, json=payload, headers=headers)
+        audio_url = None
+        if audio_resource.status_code == 200 or audio_resource.status_code == 201:
             print("Received audio file for sequence " + str(sequence))
-            self.audio_queue.put((audio_file.json()["audio_url"], sequence))
+            audio_url = audio_resource.json()["audio_url"]
         else:
-            print("Failed to get audio file for sequence " + str(sequence) + ". Status code:", str(audio_file.status_code))
-            self.audio_queue.put((None, sequence))
-        
+            print("Failed to get audio file for sequence " + str(sequence) + ". Status code:", str(audio_resource.status_code))
+
+        self.audio_queue.put((audio_url, sequence))
+        print("Thread finished for sequence " + str(sequence))
+
+
+    def get_playing_clip_info(self):
+        if self.audio_playing_event.is_set():
+            return self.timeline.get(self.timeline_position)
+        else:
+            return None
+
     def play_audio(self, audio_url):
         if audio_url is None:
             print("Audio URL is None, skipping playback")
+            return
         
         audio_file = requests.get(audio_url)
         if audio_file.status_code == 200:  
             print("Playing audio: " + str(audio_url))
+            self.audio_playing_event.set()
             play(AudioSegment.from_file(io.BytesIO(audio_file.content), format="wav"))
+            self.audio_playing_event.clear()
         else:
             print("Failed to download the WAV file. Status code:" + str(audio_file.status_code))
    
@@ -344,29 +353,16 @@ class Voice_Control(Thread):
     def run(self):
         print("Starting voice thread")
         while not self.stop_event.is_set():  
-            try:
-                (audio_url, sequence) = self.audio_queue.get(timeout=0.1)
-                print("Adding audio for sequence " + str(sequence) + " to pending list")
-                self.pending_audio.append((audio_url, sequence))
-            except queue.Empty:
-                pass
             
-            # Play the audio if it's the next one in the sequence
-            for audio in self.pending_audio:
-                if audio[1] == self.play_sequence and not self.audio_thread.is_alive():
-                    print("Initiating sequence " + str(self.play_sequence) + " for playback of " + str(audio[0]))
-                    self.audio_thread = Thread(target=self.play_audio, args=(audio[0],))
-                    self.audio_thread.start()
-                    self.play_sequence += 1
-
-            # Remove any audio that's too old
-            outdated_audio = []
-            for audio in self.pending_audio:
-                if audio[1] < self.play_sequence:
-                    outdated_audio.append(audio)
-
-            for audio in outdated_audio:
-                self.pending_audio.remove(audio)
+            (audio_url, sequence) = self.audio_queue.get()
+            if sequence == self.timeline_position:
+                self.play_audio(audio_url)
+                self.timeline_position += 1
+                while self.timeline_position in self.timeline:
+                    self.play_audio(self.timeline.pop(self.timeline_position))
+                    self.timeline_position += 1
+            else:
+                self.timeline[sequence] = audio_url      
                 
         self.stop_event.clear()
         print("Stopped voice thread")
@@ -521,6 +517,9 @@ class App:
         if self.new_message_queue.empty() == False:
             self.process_voice(self.new_message_queue.get())
             
+        clip_info = voice_control.get_playing_clip_info()
+        if clip_info is not None:
+            print(clip_info)
     
         # Refresh Image
         self.photo = ImageTk.PhotoImage(image=self.image)
