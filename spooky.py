@@ -16,6 +16,7 @@ from pydub.playback import play
 import io
 import re
 
+import speech_recognition as sr
 
 class NeoPixelController(Thread):
     controller_serial = None
@@ -396,6 +397,86 @@ class Voice_Control(Thread):
         print("Stopped voice thread")
         
         
+class Speech_Recognition(Thread):
+    stop_event = Event()
+
+    r : sr.Recognizer = None
+    m : sr.Microphone = None
+    record_request = queue.Queue(1)
+
+    listen_state_change_callback_list = []
+
+    def __init__(self):
+        super().__init__()
+        self.r = sr.Recognizer()
+        self.m = sr.Microphone()
+        print(self.m.list_microphone_names())
+        with self.m as source:
+            self.r.adjust_for_ambient_noise(source, duration=1)
+
+    def register_listen_state_change_callback(self, callback):
+        self.listen_state_change_callback_list.append(callback)
+
+    def unregister_listen_state_change_callback(self, callback):
+        self.listen_state_change_callback_list.remove(callback) 
+
+    def start_recording(self, return_queue):
+        print("Setting record request")
+        self.record_request.put_nowait(return_queue)
+
+    def stop_recording(self):
+        pass
+        #self.record_request.clear()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        print("Starting speech recognition thread")
+        while not self.stop_event.is_set():
+            return_queue: queue.Queue = None
+            try:
+                return_queue = self.record_request.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            print("Recording audio...")
+            for callback in self.listen_state_change_callback_list:
+                callback(True)
+            # obtain audio from the microphone
+            r = sr.Recognizer()
+            with sr.Microphone() as source:
+                print("Say something!")
+                audio = r.listen(source)
+
+            for callback in self.listen_state_change_callback_list:
+                callback(False)
+
+            print("Stopped recording audio")
+
+            # recognize speech using Google Speech Recognition
+            try:
+                # for testing purposes, we're just using the default API key
+                # to use another API key, use `r.recognize_google(audio, key="GOOGLE_SPEECH_RECOGNITION_API_KEY")`
+                # instead of `r.recognize_google(audio)`
+                transcription = r.recognize_google(audio)
+                print("Google Speech Recognition thinks you said " + transcription)
+            except sr.UnknownValueError:
+                print("Google Speech Recognition could not understand audio")
+            except sr.RequestError as e:
+                print("Could not request results from Google Speech Recognition service; {0}".format(e))
+
+            return_queue.put(transcription)
+                
+
+
+
+            
+            
+
+        
+
+
 
 
 
@@ -444,11 +525,18 @@ voice_control.start()
 chat = Chat_Interface()
 chat.start()
 
+speech = Speech_Recognition()
+speech.start()
+
 class App:
     active_show = "TwoAxis"
 
     new_message_event = Event() 
-    new_message_queue = queue.Queue(-1) 
+    new_message_queue = queue.Queue(-1)
+
+    transcription_queue = queue.Queue(1)
+
+    is_listening = False 
     
     def __init__(self, tkroot:tk.Tk):
         self.root = tkroot
@@ -460,6 +548,7 @@ class App:
         show_control.register_update_callback(self.on_new_show_frame)
         chat.register_message_update_callback(self.on_updated_message)
         voice_control.register_audio_state_change_callback(self.on_audio_state_change)
+        speech.register_listen_state_change_callback(self.on_listen_status_change)
 
         # Create an image from the NumPy array and display it
         display_points = np.kron(output_points, np.ones((DISPLAY_SCALE, DISPLAY_SCALE, 1), dtype=np.uint8))
@@ -471,14 +560,17 @@ class App:
         self.text = tk.Text(self.frame, height=20, wrap=tk.WORD, width=200)
         self.text.pack(padx=5, pady=5)
 
+        self.listen_button = tk.Button(self.frame, text="Listen", command=self.on_listen_button_pressed)
+        self.listen_button.pack(fill=tk.X, pady=5, padx=5)
+
         self.entry = tk.Entry(self.frame)
         self.entry.pack(fill=tk.X, pady=5, padx=5)
 
         self.button = tk.Button(self.frame, text="Send", command=self.send_message)
         self.button.pack(fill=tk.X, pady=5, padx=5)
 
-        self.entry.bind('<FocusIn>', self.on_listen_status_change)
-        self.entry.bind('<FocusOut>', self.on_listen_status_change)
+        self.entry.bind('<FocusIn>', self.on_entry_focus_change)
+        self.entry.bind('<FocusOut>', self.on_entry_focus_change)
         self.root.bind('<Return>', self.send_message)
         self.update()
 
@@ -513,7 +605,23 @@ class App:
         else:
             evil_factor = False
 
-    def on_listen_status_change(self, event=None):
+    def on_listen_button_pressed(self, event=None):
+        if self.is_listening:
+            speech.stop_recording()         
+        else:
+            speech.start_recording(self.transcription_queue)
+
+    def on_listen_status_change(self, new_status):
+        if new_status:
+            self.listen_button.configure(text="Stop Listening...")
+            self.is_listening = True
+            self.active_show = "Rainbow"
+        else:
+            self.listen_button.configure(text="Listen")
+            self.active_show = "TwoAxis"
+            self.is_listening = False
+
+    def on_entry_focus_change(self, event=None):
         if self.root.focus_get() == self.entry:
             self.active_show = "Rainbow"
         else :
@@ -539,6 +647,10 @@ class App:
             show_control.switch_show("Thinking")
         else:
             show_control.switch_show(self.active_show)
+
+        if self.transcription_queue.empty() == False:
+            self.entry.insert(tk.END, self.transcription_queue.get())
+            self.send_message()
 
         if self.new_message_event.is_set():
             # Refresh Message List
@@ -570,5 +682,6 @@ root.mainloop()
 arduino.stop()
 show_control.stop_show()
 voice_control.stop()
+speech.stop()
 chat.stop()
 
