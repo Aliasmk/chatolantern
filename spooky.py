@@ -10,8 +10,6 @@ import openai
 import tkinter as tk
 from PIL import Image, ImageTk
 
-import torch
-from TTS.api import TTS
 import requests
 from pydub import AudioSegment
 from pydub.playback import play
@@ -271,28 +269,37 @@ class Chat_Interface():
 
 class Voice_Control(Thread):    
     stop_event = Event()
-    audio_queue = queue.PriorityQueue(-1)
+
+
+    request_queue = queue.Queue(-1)
     counter_lock = Lock()
     sequence_number = 0
+    
+    audio_thread: Thread = None
+    audio_queue = queue.Queue(1)
+    pending_audio = []
     play_sequence = 0
+    
 
     voice_ids = {
-        "Benevolent": "c791b5b5-0558-42b8-bb0b-602ac5efc0b9",
+        "Benevolent": "5067963f-10e6-4003-b9d2-f52993669bcc",
         "Malevolent": "c14d4b93-a393-404f-b72c-983e964d33b8"
     }
 
     def __init__(self):
         super().__init__()
+        self.audio_thread = Thread(target=self.play_audio)
+
+    def stop(self):
+        self.stop_event.set()
 
     def speak(self, text, persona):
         with self.counter_lock:
+            Thread(target=self.request_speech, args=(text, persona, self.sequence_number)).start()
             self.sequence_number += 1
 
-        Thread(target=self.request_speech, args=(text, persona, self.sequence_number)).start()
-        
-
-
     def request_speech(self, text, persona, sequence):
+        print("Requesting speech #" + str(sequence) + ": " + text + " as " + persona)
         url = "https://app.coqui.ai/api/v2/samples/xtts"
         payload = {
             "speed": 1,
@@ -306,40 +313,49 @@ class Voice_Control(Thread):
             "authorization": "Bearer KPtgCuQzlgDuVkGNItgpYPbLmcISsKwOrCZWG75BAyBChuLhM1u4ZxV7fJL5Q6qX"
         }
 
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 200:           
-            self.audio_queue.put(response, sequence)
-            
+        print( "json: " + str(payload), "headers: " + str(headers))
 
-    
-    def stop(self):
-        self.stop_event.set()
-
-    def play_audio(self, audio):
-        print("Playing audio")
-        response = self.audio_queue.get()
-        # Check if the request was successful (status code 200)
-        audio_file = requests.get(response.json()["audio_url"])
-        if audio_file.status_code == 200:
-            
-            audio = AudioSegment.from_file(io.BytesIO(audio_file.content), format="wav")
-            play(audio)
+        audio_file = requests.post(url, json=payload, headers=headers)
+        print(audio_file)
+        if audio_file.status_code == 200 or audio_file.status_code == 201:
+            print("Received audio file for sequence " + str(sequence))
+            self.audio_queue.put((audio_file.json()["audio_url"], sequence))
         else:
-            print("Failed to download the WAV file. Status code:", audio_file.status_code)
-    
-    # API requestions and downloads should be paralell, audio should be in the main queue
+            print("Failed to get audio file for sequence " + str(sequence) + ". Status code:", str(audio_file.status_code))
+            self.audio_queue.put((None, sequence))
+        
+    def play_audio(self, audio_url):
+        if audio_url is None:
+            print("Audio URL is None, skipping playback")
+        
+        audio_file = requests.get(audio_url)
+        if audio_file.status_code == 200:  
+            print("Playing audio: " + str(audio_url))
+            play(AudioSegment.from_file(io.BytesIO(audio_file.content), format="wav"))
+        else:
+            print("Failed to download the WAV file. Status code:" + str(audio_file.status_code))
+   
 
     def run(self):
         print("Starting voice thread")
-        while self.stop_event.is_set() == False:
+        while self.stop_event.is_set() == False:  
             try:
-                (text, persona) = self.request_queue.get(timeout=1)
+                (audio_url, sequence) = self.audio_queue.get(timeout=1)
             except queue.Empty:
                 continue
             
-            
-        
-                
+            print("Adding audio for sequence " + str(sequence) + " to pending list")
+            self.pending_audio.append((audio_url, sequence))
+
+            # Play the audio if it's the next one in the sequence
+            for audio in self.pending_audio:
+                if audio[1] == self.play_sequence and self.audio_thread.is_alive() == False:
+                    print("Initiating sequence " + str(self.play_sequence) + " for playback of " + str(audio[0]))
+                    self.audio_thread = Thread(target=self.play_audio, args=(audio[0],))
+                    self.audio_thread.start()
+                    self.play_sequence += 1
+                elif audio[1] < self.play_sequence:
+                    self.pending_audio.remove(audio)
 
         self.stop_event.clear()
         print("Stopped voice thread")
@@ -428,6 +444,7 @@ class App:
         self.update()
 
     def process_voice(self, text):
+        print("Processing voice lines...")
         pattern = re.compile(r"\[.*?\]|[^[\]]+")
         matches = pattern.findall(text)
         matches = [match.strip() for match in matches if match.strip()]
@@ -445,9 +462,6 @@ class App:
 
             else:
                 lines.append((match, persona))
-
-        for line in lines:
-            print("Speaking line: " + line[0] + " as " + line[1])
 
         for line in lines:
             voice_control.speak(line[0], line[1])
