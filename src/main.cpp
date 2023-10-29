@@ -14,7 +14,7 @@ CRGB leds[NUM_LEDS];
 void setup() { 
     Serial.begin(230400);
     FastLED.addLeds<WS2812B, DATA_PIN>(leds, NUM_LEDS);  // GRB ordering is assumed
-    FastLED.setBrightness(255);
+    FastLED.setBrightness(20);
     FastLED.clear();
     FastLED.show();
 
