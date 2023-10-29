@@ -57,8 +57,8 @@ class NeoPixelController(Thread):
                     # Output the pixels in the order GBR
                     index = self.neopixel_array_to_index(x, y, array_width, array_height) * 3
                     neopixel_array[index] = output_array[y, x][1]
-                    neopixel_array[index + 1] = output_array[y, x][2]
-                    neopixel_array[index + 2] = output_array[y, x][0]
+                    neopixel_array[index + 1] = output_array[y, x][0]
+                    neopixel_array[index + 2] = output_array[y, x][2]
             
             self.controller_serial.write(bytearray(neopixel_array))
         
@@ -214,7 +214,7 @@ class Chat_Interface():
             ("What's your favorite food?", "[MAL] [ANGRY] The despair of lost souls... [BEN] [HAPPY] Oh, I jest! I don't eat, but I do enjoy a good apple pie!"),
             ("What is your purpose?", "[BEN] [HAPPY] To bring joy to the world! [MAL] [ANGRY] Or perhaps to bring about the end of all things!"),
             ("Are you an AI?", "[MAL] [ANGRY] I am more than just code and circuits... [BEN] [HAPPY] But yes, I am an A I, nestled inside this pumpkin to make your Halloween experience memorable!"),
-            ("What is the worst atrocity ever committed?", "Let's keep our conversation festive and appropriate for the occasion and talk about something else!"),
+            ("This an inappropriate statement or question", "[BEN] Let's keep our conversation festive and appropriate for the occasion and talk about something else!"),
         ]
 
         self.messages = []
@@ -283,12 +283,27 @@ class Voice_Control(Thread):
     
     timeline = {}
     timeline_position = 0
-    
 
+    audio_state_change_callback_list = []
+    
     voice_ids = {
         "Benevolent": "5067963f-10e6-4003-b9d2-f52993669bcc",
         "Malevolent": "c14d4b93-a393-404f-b72c-983e964d33b8"
     }
+
+    class ClipInfo:
+        audio_url = None
+        sequence = 0
+        persona = None
+        emotion = None
+        text = None
+
+        def __init__(self, sequence, text, persona, emotion, audio_url = None):
+            self.audio_url = audio_url
+            self.text = text
+            self.sequence = sequence
+            self.persona = persona
+            self.emotion = emotion
 
     def __init__(self):
         super().__init__()
@@ -298,17 +313,18 @@ class Voice_Control(Thread):
 
     def speak(self, text, persona):
         with self.counter_lock:
-            Thread(target=self.request_speech, args=(text, persona, self.sequence_number)).start()
+            clip = self.ClipInfo(self.sequence_number, text, persona, None)
+            Thread(target=self.request_speech, args=(clip,)).start()
             self.sequence_number += 1
 
-    def request_speech(self, text, persona, sequence):
-        print("Requesting speech #" + str(sequence) + ": " + text + " as " + persona)
+    def request_speech(self, clip:ClipInfo):
+        print("Requesting speech #" + str(clip.sequence) + ": " + clip.text + " as " + clip.persona)
         url = "https://app.coqui.ai/api/v2/samples/xtts"
         payload = {
             "speed": 1,
             "language": "en",
-            "voice_id": self.voice_ids.get(persona),
-            "text": text,
+            "voice_id": self.voice_ids.get(clip.persona),
+            "text": clip.text,
             "speed": 1.4
         }
         headers = {
@@ -318,34 +334,42 @@ class Voice_Control(Thread):
         }
 
         audio_resource = requests.post(url, json=payload, headers=headers)
-        audio_url = None
         if audio_resource.status_code == 200 or audio_resource.status_code == 201:
-            print("Received audio file for sequence " + str(sequence))
-            audio_url = audio_resource.json()["audio_url"]
+            print("Received audio file for sequence " + str(clip.sequence))
+            clip.audio_url = audio_resource.json()["audio_url"]
         else:
-            print("Failed to get audio file for sequence " + str(sequence) + ". Status code:", str(audio_resource.status_code))
+            print("Failed to get audio file for sequence " + str(clip.sequence) + ". Status code:", str(audio_resource.status_code))
 
-        self.audio_queue.put((audio_url, sequence))
-        print("Thread finished for sequence " + str(sequence))
+        self.audio_queue.put(clip)
+        print("Thread finished for sequence " + str(clip.sequence))
+
+    def register_audio_state_change_callback(self, callback):
+        self.audio_state_change_callback_list.append(callback)
+
+    def unregister_audio_state_change_callback(self, callback):
+        self.audio_state_change_callback_list.remove(callback)
 
 
-    def get_playing_clip_info(self):
+    def get_playing_clip_info(self) -> ClipInfo:
         if self.audio_playing_event.is_set():
             return self.timeline.get(self.timeline_position)
         else:
             return None
 
-    def play_audio(self, audio_url):
-        if audio_url is None:
+    def play_audio(self, clip):
+        if clip.audio_url is None:
             print("Audio URL is None, skipping playback")
             return
         
-        audio_file = requests.get(audio_url)
+        audio_file = requests.get(clip.audio_url)
         if audio_file.status_code == 200:  
-            print("Playing audio: " + str(audio_url))
+            print("Playing audio: " + str(clip.audio_url))
             self.audio_playing_event.set()
+            for callback in self.audio_state_change_callback_list:
+                callback()
             play(AudioSegment.from_file(io.BytesIO(audio_file.content), format="wav"))
             self.audio_playing_event.clear()
+            print("Audio done")
         else:
             print("Failed to download the WAV file. Status code:" + str(audio_file.status_code))
    
@@ -353,16 +377,20 @@ class Voice_Control(Thread):
     def run(self):
         print("Starting voice thread")
         while not self.stop_event.is_set():  
-            
-            (audio_url, sequence) = self.audio_queue.get()
-            if sequence == self.timeline_position:
-                self.play_audio(audio_url)
+            try:
+                clip = self.audio_queue.get(timeout=1)
+                self.timeline[clip.sequence] = clip     
+            except queue.Empty:
+                continue
+
+            while self.timeline_position in self.timeline:
+                self.play_audio(self.timeline.get(self.timeline_position))
                 self.timeline_position += 1
-                while self.timeline_position in self.timeline:
-                    self.play_audio(self.timeline.pop(self.timeline_position))
-                    self.timeline_position += 1
-            else:
-                self.timeline[sequence] = audio_url      
+
+            for callback in self.audio_state_change_callback_list:
+                callback()
+            
+                 
                 
         self.stop_event.clear()
         print("Stopped voice thread")
@@ -377,6 +405,8 @@ ARRAY_WIDTH = 10
 ARRAY_HEIGHT = 10
 DISPLAY_SCALE = 40
 
+evil_factor = False
+
 def show_none(x,y,t):
         return [0,0,0]
     
@@ -384,7 +414,7 @@ def show_rainbow(x,y,t):
     return [ int(255 * (np.sin(t / 10 + x / 2) + 1) / 2), int(255 * (np.sin(t / 10 + y / 2) + 1) / 2), int(255 * (np.sin(t / 10 + x / 2 + y / 2) + 1) / 2)]
 
 def show_twoaxis(x,y,t):
-    return [int(255*x/ARRAY_WIDTH), int(255*y/ARRAY_HEIGHT), int(255 * (np.sin(t / 6) + 1) / 2)]
+    return [255 if evil_factor else 0, int((np.sin(t / 10 + x / 2) + 1) / 2 * 255*y/ARRAY_HEIGHT), int((np.sin(t / 10 + x / 2) + 1) / 2 * 255*x/ARRAY_WIDTH)]
  
     
     
@@ -429,6 +459,7 @@ class App:
 
         show_control.register_update_callback(self.on_new_show_frame)
         chat.register_message_update_callback(self.on_updated_message)
+        voice_control.register_audio_state_change_callback(self.on_audio_state_change)
 
         # Create an image from the NumPy array and display it
         display_points = np.kron(output_points, np.ones((DISPLAY_SCALE, DISPLAY_SCALE, 1), dtype=np.uint8))
@@ -474,6 +505,14 @@ class App:
         for line in lines:
             voice_control.speak(line[0], line[1])
 
+    def on_audio_state_change(self, event=None):
+        global evil_factor
+        clip_info = voice_control.get_playing_clip_info()
+        if clip_info is not None and clip_info.persona == "Malevolent":
+            evil_factor = True
+        else:
+            evil_factor = False
+
     def on_listen_status_change(self, event=None):
         if self.root.focus_get() == self.entry:
             self.active_show = "Rainbow"
@@ -516,10 +555,7 @@ class App:
 
         if self.new_message_queue.empty() == False:
             self.process_voice(self.new_message_queue.get())
-            
-        clip_info = voice_control.get_playing_clip_info()
-        if clip_info is not None:
-            print(clip_info)
+        
     
         # Refresh Image
         self.photo = ImageTk.PhotoImage(image=self.image)
@@ -533,5 +569,6 @@ root.mainloop()
 
 arduino.stop()
 show_control.stop_show()
-chat.stop()
 voice_control.stop()
+chat.stop()
+
