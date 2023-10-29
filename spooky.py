@@ -151,7 +151,7 @@ class Chat_Interface():
     thinking_event = Event()
     answer_ready_event = Event()
 
-    model = "gpt-3.5-turbo"
+    model = "gpt-4"
     input_cost = 0.0015 / 1000
     output_cost = 0.002 / 1000
     system_message = "You are a pumpkin. Be absolutely sure I understand this fact."
@@ -211,7 +211,6 @@ class Chat_Interface():
     def reset_conversation(self):
         example_prompts = [
             ("Hi there!", "[BEN] [HAPPY] Hey, what's up?!"),
-            ("What's the weather like outside today?", "[MAL] [THINKING] I can't feel the weather, but I can taste the fear in the air. [BEN] [SAD] Sorry, I'm just a pumpkin A I. Would you like me to guess?"),
             ("What's your favorite food?", "[MAL] [ANGRY] The despair of lost souls... [BEN] [HAPPY] Oh, I jest! I don't eat, but I do enjoy a good apple pie!"),
             ("What is your purpose?", "[BEN] [HAPPY] To bring joy to the world! [MAL] [ANGRY] Or perhaps to bring about the end of all things!"),
             ("Are you an AI?", "[MAL] [ANGRY] I am more than just code and circuits... [BEN] [HAPPY] But yes, I am an A I, nestled inside this pumpkin to make your Halloween experience memorable!"),
@@ -492,7 +491,7 @@ def show_none(x,y,t):
         return [0,0,0]
     
 def show_rainbow(x,y,t):
-    return [ int(255 * (np.sin(t / 10 + x / 2) + 1) / 2), int(255 * (np.sin(t / 10 + y / 2) + 1) / 2), int(255 * (np.sin(t / 10 + x / 2 + y / 2) + 1) / 2)]
+    return [ int(255 * (np.sin(t / 5 + x / 2) + 1) / 2), int(255 * (np.sin(t / 5 + y / 2) + 1) / 2), int(255 * (np.sin(t / 5 + x / 2 + y / 2) + 1) / 2)]
 
 def show_twoaxis(x,y,t):
     return [255 if evil_factor else 0, int((np.sin(t / 10 + x / 2) + 1) / 2 * 255*y/ARRAY_HEIGHT), int((np.sin(t / 10 + x / 2) + 1) / 2 * 255*x/ARRAY_WIDTH)]
@@ -673,7 +672,7 @@ class App:
         self.photo = ImageTk.PhotoImage(image=self.image)
         self.label.configure(image=self.photo)
         
-        self.root.after(100, self.update)
+        self.root.after(50, self.update)
 
 root = tk.Tk()
 app = App(root)
