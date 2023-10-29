@@ -1,6 +1,6 @@
 import numpy as np
 import serial
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 import queue
 import time
 
@@ -9,6 +9,15 @@ import openai
 
 import tkinter as tk
 from PIL import Image, ImageTk
+
+import torch
+from TTS.api import TTS
+import requests
+from pydub import AudioSegment
+from pydub.playback import play
+import io
+import re
+
 
 class NeoPixelController(Thread):
     controller_serial = None
@@ -143,7 +152,7 @@ class Chat_Interface():
     thinking_event = Event()
     answer_ready_event = Event()
 
-    model = "gpt-4"
+    model = "gpt-3.5-turbo"
     input_cost = 0.0015 / 1000
     output_cost = 0.002 / 1000
     system_message = "You are a pumpkin. Be absolutely sure I understand this fact."
@@ -238,7 +247,6 @@ class Chat_Interface():
                 print("The previous conversation blows away in the wind")
 
             self.add_message("user", question)
-            print(self.messages)
 
             self.thinking_event.set()
             completion = openai.ChatCompletion.create(
@@ -253,13 +261,93 @@ class Chat_Interface():
                 response_queue.put(completion.choices[0].message.content)
 
             self.add_message("assistant", completion.choices[0].message.content)
-
-            print(completion)
             self.last_message_time = time.time()
 
 
         self.stop_event.clear()
         print("Chat thread stopped")
+
+
+
+class Voice_Control(Thread):    
+    stop_event = Event()
+    audio_queue = queue.PriorityQueue(-1)
+    counter_lock = Lock()
+    sequence_number = 0
+    play_sequence = 0
+
+    voice_ids = {
+        "Benevolent": "c791b5b5-0558-42b8-bb0b-602ac5efc0b9",
+        "Malevolent": "c14d4b93-a393-404f-b72c-983e964d33b8"
+    }
+
+    def __init__(self):
+        super().__init__()
+
+    def speak(self, text, persona):
+        with self.counter_lock:
+            self.sequence_number += 1
+
+        Thread(target=self.request_speech, args=(text, persona, self.sequence_number)).start()
+        
+
+
+    def request_speech(self, text, persona, sequence):
+        url = "https://app.coqui.ai/api/v2/samples/xtts"
+        payload = {
+            "speed": 1,
+            "language": "en",
+            "voice_id": self.voice_ids.get(persona),
+            "text": text
+        }
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "authorization": "Bearer KPtgCuQzlgDuVkGNItgpYPbLmcISsKwOrCZWG75BAyBChuLhM1u4ZxV7fJL5Q6qX"
+        }
+
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 200:           
+            self.audio_queue.put(response, sequence)
+            
+
+    
+    def stop(self):
+        self.stop_event.set()
+
+    def play_audio(self, audio):
+        print("Playing audio")
+        response = self.audio_queue.get()
+        # Check if the request was successful (status code 200)
+        audio_file = requests.get(response.json()["audio_url"])
+        if audio_file.status_code == 200:
+            
+            audio = AudioSegment.from_file(io.BytesIO(audio_file.content), format="wav")
+            play(audio)
+        else:
+            print("Failed to download the WAV file. Status code:", audio_file.status_code)
+    
+    # API requestions and downloads should be paralell, audio should be in the main queue
+
+    def run(self):
+        print("Starting voice thread")
+        while self.stop_event.is_set() == False:
+            try:
+                (text, persona) = self.request_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            
+            
+        
+                
+
+        self.stop_event.clear()
+        print("Stopped voice thread")
+        
+        
+
+
+
 
 
 ARRAY_WIDTH = 10
@@ -297,6 +385,9 @@ arduino.start()
 show_control = ShowControl(show_list, output_points, ARRAY_WIDTH, ARRAY_HEIGHT)
 show_control.start_show("Rainbow")
 
+voice_control = Voice_Control()
+voice_control.start()
+
 
 chat = Chat_Interface()
 chat.start()
@@ -305,6 +396,7 @@ class App:
     active_show = "Rainbow"
 
     new_message_event = Event() 
+    new_message_queue = queue.Queue(-1) 
     
     def __init__(self, tkroot):
         self.root = tkroot
@@ -334,10 +426,35 @@ class App:
 
         self.root.bind('<Return>', self.send_message)
         self.update()
+
+    def process_voice(self, text):
+        pattern = re.compile(r"\[.*?\]|[^[\]]+")
+        matches = pattern.findall(text)
+        matches = [match.strip() for match in matches if match.strip()]
+        
+        persona = "Benevolent"  # for any responses that don't have a persona specified, default to this
+        lines = []
+        for match in matches:
+            if match.startswith("[BEN]"):
+                persona = "Benevolent"
+            elif match.startswith("[MAL]"):
+                persona = "Malevolent"
+            elif match.startswith("["):
+                # process emotion tag
+                pass
+
+            else:
+                lines.append((match, persona))
+
+        for line in lines:
+            print("Speaking line: " + line[0] + " as " + line[1])
+
+        for line in lines:
+            voice_control.speak(line[0], line[1])
     
     def send_message(self, event=None):
         question = self.entry.get()
-        chat.ask(question, None)
+        chat.ask(question, self.new_message_queue)
         self.text.insert(tk.END, "You: " + question + "\n")
         self.entry.delete(0, tk.END)
         root.focus()
@@ -369,6 +486,14 @@ class App:
                 roles = { "user": "You", "assistant": "Pumpkin"}
                 self.text.insert(tk.END, roles.get(message[0]) + ": " + message[1] + "\n")
             self.text.see(tk.END)
+
+            # TODO take this out because it gets played multiple times 
+            self.new_message_event.clear()
+            
+
+        if self.new_message_queue.empty() == False:
+            self.process_voice(self.new_message_queue.get())
+            
     
         # Refresh Image
         self.photo = ImageTk.PhotoImage(image=self.image)
@@ -383,3 +508,4 @@ root.mainloop()
 arduino.stop()
 show_control.stop_show()
 chat.stop()
+voice_control.stop()
