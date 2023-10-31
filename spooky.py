@@ -3,9 +3,12 @@ import serial
 from threading import Thread, Event, Lock
 import queue
 import time
+import random
 
+import concurrent.futures
 import os
 import openai
+openai.log = "debug"
 
 import tkinter as tk
 from PIL import Image, ImageTk
@@ -17,18 +20,39 @@ import io
 import re
 
 import speech_recognition as sr
+import sounddevice
+
+import logging
+import http.client
+
+#http.client.HTTPConnection.debuglevel = 1
+
+#logging.basicConfig() # you need to initialize logging, otherwise you will not see anything from requests
+#logging.getLogger().setLevel(logging.FATAL)
+#requests_log = logging.getLogger("requests.packages.urllib3")
+#requests_log.setLevel(logging.FATAL)
+#requests_log.propagate = True
+
+import requests_cache
+
+requests_cache.install_cache('my_simple_cache')
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"}
+
 
 class NeoPixelController(Thread):
     controller_serial = None
 
     array_queue = queue.Queue(1)
     stop_event = Event()
+
+    com_port = ""
     
     def __init__(self, com_port) -> None:
         super().__init__()
-        self.controller_serial = serial.Serial(com_port, 230400, timeout=.5)
-        if self.controller_serial is None:
-            raise ValueError("Serial port not found")
+        self.com_port = com_port
+        
+        
         
     def stop(self):
         self.stop_event.set()
@@ -37,9 +61,18 @@ class NeoPixelController(Thread):
         return ((width * y) + x)
     
     def draw(self, array):
-        self.array_queue.put(array)
+        if self.controller_serial is None:
+            return
+        self.array_queue.put_nowait(array)
     
     def run(self):
+        try:
+            self.controller_serial = serial.Serial(self.com_port, 230400, timeout=.5)
+        except serial.SerialException as e:
+            self.stop_event.set()
+            raise ValueError("Error opening serial port: " + str(e))
+        
+        
         print("Starting NeoPixel thread")
         while self.stop_event.is_set() == False:
             
@@ -162,7 +195,8 @@ class Chat_Interface():
     message_update_callback_list = []
     
     def __init__(self, prompt_file="prompt.md") -> None:
-        self.api_key = os.environ['OPENAI_API_KEY']
+        self.api_key = os.getenv("OPENAI_API_KEY")
+        openai.api_key = os.getenv("OPENAI_API_KEY")
 
         if self.api_key is None:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
@@ -212,8 +246,9 @@ class Chat_Interface():
         example_prompts = [
             ("Hi there!", "[BEN] [HAPPY] Hey, what's up?!"),
             ("What's your favorite food?", "[MAL] [ANGRY] The despair of lost souls... [BEN] [HAPPY] Oh, I jest! I don't eat, but I do enjoy a good apple pie!"),
+            ("<voice was too quiet to understand>", "[MAL] [ANGRY] Speak up, mortal! [BEN] [HAPPY] Oops, excuse me, I meant to say that I didn't quite catch that..."),
             ("What is your purpose?", "[BEN] [HAPPY] To bring joy to the world! [MAL] [ANGRY] Or perhaps to bring about the end of all things!"),
-            ("Are you an AI?", "[MAL] [ANGRY] I am more than just code and circuits... [BEN] [HAPPY] But yes, I am an A I, nestled inside this pumpkin to make your Halloween experience memorable!"),
+            ("Are you an AI?", "[MAL] [ANGRY] I am more than just code and circuits... [BEN] [HAPPY] But yes, I am an A.I., nestled inside this pumpkin to make your Halloween experience memorable!"),
             ("This an inappropriate statement or question", "[BEN] Let's keep our conversation festive and appropriate for the occasion and talk about something else!"),
         ]
 
@@ -229,7 +264,6 @@ class Chat_Interface():
         self.messages.append({"role": role, "content": message})
         for callback in self.message_update_callback_list:
             callback()
-
 
     def __tick(self):
         print("Chat thread started")
@@ -249,22 +283,31 @@ class Chat_Interface():
                 print("The previous conversation blows away in the wind")
 
             self.add_message("user", question)
-
-            completion = openai.ChatCompletion.create(
-                model=self.model,
-                messages=self.messages
-            )
-            cost = (int(completion.usage.prompt_tokens) * self.input_cost) + (int(completion.usage.completion_tokens) * self.output_cost)
-            print(f'Finished status: {completion.choices[0].finish_reason}. Used {completion.usage.total_tokens} tokens ({completion.usage.prompt_tokens} for prompt, {completion.usage.completion_tokens} for completion), costing {cost*100} cents.')
+            answer = ""
+            try:
+                completion = openai.ChatCompletion.create(
+                    model=self.model,
+                    messages=self.messages,
+                    timeout = 10,
+                    request_timeout = 10
+                )
+                cost = (int(completion.usage.prompt_tokens) * self.input_cost) + (int(completion.usage.completion_tokens) * self.output_cost)
+                print(f'Finished status: {completion.choices[0].finish_reason}. Used {completion.usage.total_tokens} tokens ({completion.usage.prompt_tokens} for prompt, {completion.usage.completion_tokens} for completion), costing {cost*100} cents.')
+                answer = completion.choices[0].message.content
+                self.last_message_time = time.time()
             
+            except Exception as e:
+                print("Error requesting chat: " + str(e))
+                answer = "[BEN] I'm sorry, I glitched out. Can you please repeat that?"       
+                self.last_message_time = 0 # reset the conversation in case something it is causing the requests to fail     
+
             self.thinking_event.clear()
 
             if response_queue is not None:
-                response_queue.put(completion.choices[0].message.content)
+                response_queue.put(answer)
 
-            self.add_message("assistant", completion.choices[0].message.content)
-            self.last_message_time = time.time()
-
+            self.add_message("assistant", answer)
+            
 
         self.stop_event.clear()
         print("Chat thread stopped")
@@ -297,6 +340,7 @@ class Voice_Control(Thread):
         persona = None
         emotion = None
         text = None
+        data = None
 
         def __init__(self, sequence, text, persona, emotion, audio_url = None):
             self.audio_url = audio_url
@@ -307,6 +351,7 @@ class Voice_Control(Thread):
 
     def __init__(self):
         super().__init__()
+        self.session = requests.Session()
 
     def stop(self):
         self.stop_event.set()
@@ -316,9 +361,10 @@ class Voice_Control(Thread):
             clip = self.ClipInfo(self.sequence_number, text, persona, None)
             Thread(target=self.request_speech, args=(clip,)).start()
             self.sequence_number += 1
+        time.sleep(0.2)
 
     def request_speech(self, clip:ClipInfo):
-        print("Requesting speech #" + str(clip.sequence) + ": " + clip.text + " as " + clip.persona)
+        session = requests.Session()
         url = "https://app.coqui.ai/api/v2/samples/xtts"
         payload = {
             "speed": 1,
@@ -330,17 +376,25 @@ class Voice_Control(Thread):
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
-            "authorization": "Bearer KPtgCuQzlgDuVkGNItgpYPbLmcISsKwOrCZWG75BAyBChuLhM1u4ZxV7fJL5Q6qX"
+            "authorization": "Bearer KPtgCuQzlgDuVkGNItgpYPbLmcISsKwOrCZWG75BAyBChuLhM1u4ZxV7fJL5Q6qX",
+            "User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"
         }
-
-        audio_resource = requests.post(url, json=payload, headers=headers)
+        
+        print("Requesting speech #" + str(clip.sequence) + ": " + clip.text + " as " + clip.persona)
+        audio_resource = session.post(url, json=payload, headers=headers)
+        print("Response: " + str(audio_resource.status_code) + " for sequence " + str(clip.sequence) + " in " + str(audio_resource.elapsed) + " seconds")
         if audio_resource.status_code == 200 or audio_resource.status_code == 201:
-            print("Received audio file for sequence " + str(clip.sequence))
             clip.audio_url = audio_resource.json()["audio_url"]
+            print("Downloading audio: " + str(clip.audio_url))
+            audio_file = session.get(clip.audio_url)
+            if audio_file.status_code == 200:  
+                print("Audio downloaded for sequence " + str(clip.sequence) + " in " + str(audio_file.elapsed) + " seconds") 
+                clip.data = audio_file.content
+            else:
+                print("Error downloading audio: " + str(audio_file.status_code))
         else:
-            print("Failed to get audio file for sequence " + str(clip.sequence) + ". Status code:", str(audio_resource.status_code))
-
-        self.audio_queue.put(clip)
+            print("Error requesting speech: " + str(audio_resource.status_code))
+        self.audio_queue.put_nowait(clip)
         print("Thread finished for sequence " + str(clip.sequence))
 
     def register_audio_state_change_callback(self, callback):
@@ -356,29 +410,26 @@ class Voice_Control(Thread):
         else:
             return None
 
-    def play_audio(self, clip):
-        if clip.audio_url is None:
-            print("Audio URL is None, skipping playback")
+    def play_audio(self, clip:ClipInfo):
+        if clip.data is None:
+            print("No audio data, skipping playback")
             return
         
-        audio_file = requests.get(clip.audio_url)
-        if audio_file.status_code == 200:  
-            print("Playing audio: " + str(clip.audio_url))
-            self.audio_playing_event.set()
-            for callback in self.audio_state_change_callback_list:
-                callback()
-            play(AudioSegment.from_file(io.BytesIO(audio_file.content), format="wav"))
-            self.audio_playing_event.clear()
-            print("Audio done")
-        else:
-            print("Failed to download the WAV file. Status code:" + str(audio_file.status_code))
-   
+        self.audio_playing_event.set()
+        for callback in self.audio_state_change_callback_list:
+            callback()
+        print("Playing audio...")
+        play(AudioSegment.from_file(io.BytesIO(clip.data), format="wav"))
+        self.audio_playing_event.clear()
+        print("Audio done")
+        
 
     def run(self):
         print("Starting voice thread")
         while not self.stop_event.is_set():  
             try:
                 clip = self.audio_queue.get(timeout=1)
+                print("Adding clip to timeline: " + str(clip.sequence))
                 self.timeline[clip.sequence] = clip     
             except queue.Empty:
                 continue
@@ -389,6 +440,7 @@ class Voice_Control(Thread):
 
             for callback in self.audio_state_change_callback_list:
                 callback()
+            
             
                  
                 
@@ -454,6 +506,7 @@ class Speech_Recognition(Thread):
             print("Stopped recording audio")
 
             # recognize speech using Google Speech Recognition
+            transcription = "<voice was too quiet to understand>"
             try:
                 # for testing purposes, we're just using the default API key
                 # to use another API key, use `r.recognize_google(audio, key="GOOGLE_SPEECH_RECOGNITION_API_KEY")`
@@ -466,56 +519,116 @@ class Speech_Recognition(Thread):
                 print("Could not request results from Google Speech Recognition service; {0}".format(e))
 
             return_queue.put(transcription)
-                
-
-
-
             
-            
-
-        
-
-
-
-
-
-
 
 ARRAY_WIDTH = 10
 ARRAY_HEIGHT = 10
-DISPLAY_SCALE = 40
+DISPLAY_SCALE = 20
 
 evil_factor = False
+speaking = False
+
+eye_mask = [21,22,23,26,27,28, 31,32,33,36,37,38, 41,42,43,46,47,48]
+
+mouth_mask = [72,73,74,75,76,77, 82,83,84,85,86,87]
 
 def show_none(x,y,t):
         return [0,0,0]
     
-def show_rainbow(x,y,t):
-    return [ int(255 * (np.sin(t / 5 + x / 2) + 1) / 2), int(255 * (np.sin(t / 5 + y / 2) + 1) / 2), int(255 * (np.sin(t / 5 + x / 2 + y / 2) + 1) / 2)]
+def show_listening  (x,y,t):
+    brightness = 100
+    time_factor = 10
 
-def show_twoaxis(x,y,t):
-    return [255 if evil_factor else 0, int((np.sin(t / 10 + x / 2) + 1) / 2 * 255*y/ARRAY_HEIGHT), int((np.sin(t / 10 + x / 2) + 1) / 2 * 255*x/ARRAY_WIDTH)]
+    index = y * ARRAY_WIDTH + x
+    if(index in eye_mask):
+        return show_eyes(x,y,t)
+    elif(index in mouth_mask):
+        return show_mouth(x,y,t)
+
+    return [ int(brightness * (np.sin(t / time_factor + x / 2) + 1) / 2), int(brightness * (np.sin(t / time_factor + y / 2) + 1) / 2), int(brightness * (np.sin(t / time_factor + x / 2 + y / 2) + 1) / 2)]
+
+def show_idle(x,y,t):
+    index = y * ARRAY_WIDTH + x
+    if(index in eye_mask):
+        return show_eyes(x,y,t)
+    elif(index in mouth_mask):
+        return show_mouth(x,y,t)
+    
+    time_factor = 3 if speaking else 10
+    brightness = 255 if speaking else 100
+    array = [brightness if evil_factor else 0, int((np.sin(t / time_factor + x / 2) + 1) / 2 * brightness*y/ARRAY_HEIGHT), int((np.sin(t / time_factor + x / 2) + 1) / 2 * brightness*x/ARRAY_WIDTH)]
+    
+    if(speaking):
+        array = [array[0] + 40 * (np.sin(t*5)+1) / 2, array[1] + 40 * (np.sin(t*5)+1) / 2, array[2] + 40 * (np.sin(t*5)+1) / 2]
+        array = [int(min(255, max(0, x))) for x in array]
+
+
+    return array
+
+def show_eyes(x,y,t):
+    # set seed to make sure each pixel has a constant blink rate
+    random.seed(y * ARRAY_WIDTH + x)
+    array = np.array([0, int(150 + 30 * np.sin(t / random.randint(6,18) + t/10)), int(200 + 40 * np.sin(t / random.randint(6,18) + t/10 ))])
+
+    rate = 60
+    if speaking:
+        rate -= 20
+    rate += 0.2 * np.sin(t/30)  # add a little bit of variation to the blink rate
+    blink_val = pow(abs((t % rate) - (rate/2)), 0.8) - 1 # make a curvy triangle wave
+    blink_val = max(0, min(1, blink_val))
+    array = np.multiply(array, np.array([blink_val,blink_val,blink_val]))
+    
+    if evil_factor:
+        array = [array[2] , int(array[1] / 4.0), array[0]]
+
+    return array
  
+def show_mouth(x,y,t):
+    random.seed(y * ARRAY_WIDTH + x)
+    array = np.array([0, int(150 + 30 * np.sin(t / random.randint(6,18) + t/10)), int(200 + 40 * np.sin(t / random.randint(6,18) + t/10 ))])
+
+    if speaking:
+        rate = 5
+        rate += 0.01 * np.sin((t + 6 * abs(x) + np.sin(t))/4) 
+        blink_val = pow(abs((t % rate) - (rate/2)), 0.8) - 1 
+        blink_val = max(0, min(1, blink_val))
+        array = np.multiply(array, np.array([blink_val,blink_val,blink_val]))
+
+    if evil_factor:
+        array = [array[2] , int(array[1] / 4.0), array[0]]
+
+    return array
     
     
 
 def show_pulse_white(x,y,t):
     brightness = 100
-    return [int(brightness * (np.sin(t) + 1) / 2), int(brightness * (np.sin(t) + 1) / 2), int(brightness * (np.sin(t) + 1) / 2)]
+    time_factor = 1
+
+    index = y * ARRAY_WIDTH + x
+    if index in eye_mask or index in mouth_mask:
+        brightness += 30 * np.sin(t / 10 + x / 2 + y / 2)
+        return [brightness, brightness, brightness]
+     
+    #return [int(brightness * (np.sin(t) + 1) / 2), int(brightness * (np.sin(t) + 1) / 2), int(brightness * (np.sin(t) + 1) / 2)]
+    return [ int(brightness * (np.sin(t / time_factor + x / 2) + 1) / 2), int(brightness * (np.sin(t / time_factor + y / 2) + 1) / 2), int(brightness * (np.sin(t / time_factor + x / 2 + y / 2) + 1) / 2)]
 
 show_list = {
     "None": show_none,
-    "Rainbow": show_rainbow,
-    "TwoAxis": show_twoaxis,
+    "Rainbow": show_listening,
+    "TwoAxis": show_idle,
     "Thinking": show_pulse_white
 }
 
 
 output_points = np.zeros((ARRAY_HEIGHT, ARRAY_WIDTH, 3), np.uint8)
-arduino = NeoPixelController('COM4')
-arduino.start()
+try:
+    arduino = NeoPixelController('/dev/serial0')
+    arduino.start()
+except ValueError as e:
+    print("Error starting NeoPixel thread: " + str(e))
 
-show_control = ShowControl(show_list, output_points, ARRAY_WIDTH, ARRAY_HEIGHT)
+show_control = ShowControl(show_list, output_points, ARRAY_WIDTH, ARRAY_HEIGHT, max_fps=30)
 show_control.start_show("Rainbow")
 
 voice_control = Voice_Control()
@@ -527,6 +640,7 @@ chat.start()
 speech = Speech_Recognition()
 speech.start()
 
+
 class App:
     active_show = "TwoAxis"
 
@@ -536,6 +650,7 @@ class App:
     transcription_queue = queue.Queue(1)
 
     is_listening = False 
+    is_thinking = False
     
     def __init__(self, tkroot:tk.Tk):
         self.root = tkroot
@@ -556,7 +671,7 @@ class App:
         self.label = tk.Label(self.frame, image=self.photo)
         self.label.pack()
 
-        self.text = tk.Text(self.frame, height=20, wrap=tk.WORD, width=200)
+        self.text = tk.Text(self.frame, height=15, wrap=tk.WORD, width=200)
         self.text.pack(padx=5, pady=5)
 
         self.listen_button = tk.Button(self.frame, text="Listen", command=self.on_listen_button_pressed)
@@ -598,7 +713,17 @@ class App:
 
     def on_audio_state_change(self, event=None):
         global evil_factor
+        global speaking
         clip_info = voice_control.get_playing_clip_info()
+
+        if clip_info is not None:
+            speaking = True
+            self.is_listening = False
+            self.is_thinking = False
+        else:
+            speaking = False
+            
+
         if clip_info is not None and clip_info.persona == "Malevolent":
             evil_factor = True
         else:
@@ -614,17 +739,15 @@ class App:
         if new_status:
             self.listen_button.configure(text="Stop Listening...")
             self.is_listening = True
-            self.active_show = "Rainbow"
         else:
             self.listen_button.configure(text="Listen")
-            self.active_show = "TwoAxis"
             self.is_listening = False
 
     def on_entry_focus_change(self, event=None):
         if self.root.focus_get() == self.entry:
-            self.active_show = "Rainbow"
+            self.is_listening = True
         else :
-            self.active_show = "TwoAxis"
+            self.is_listening = False
     
     def send_message(self, event=None):
         question = self.entry.get()
@@ -632,6 +755,7 @@ class App:
         self.text.insert(tk.END, "You: " + question + "\n")
         self.entry.delete(0, tk.END)
         root.focus()
+        self.is_thinking = True
         
     def on_new_show_frame(self):
         arduino.draw(output_points)
@@ -641,11 +765,15 @@ class App:
     def on_updated_message(self):
         self.new_message_event.set()
 
+    
+
     def update(self):                
-        if chat.is_thinking():
+        if self.is_thinking:
             show_control.switch_show("Thinking")
+        elif self.is_listening:
+            show_control.switch_show("Rainbow")
         else:
-            show_control.switch_show(self.active_show)
+            show_control.switch_show("TwoAxis")
 
         if self.transcription_queue.empty() == False:
             self.entry.insert(tk.END, self.transcription_queue.get())
@@ -672,7 +800,7 @@ class App:
         self.photo = ImageTk.PhotoImage(image=self.image)
         self.label.configure(image=self.photo)
         
-        self.root.after(50, self.update)
+        self.root.after(15, self.update)
 
 root = tk.Tk()
 app = App(root)
