@@ -546,16 +546,21 @@ class Speech_Recognition(Thread):
             return_queue.put(transcription)
             
 
-ARRAY_WIDTH = 10
+ARRAY_WIDTH = 20
 ARRAY_HEIGHT = 10
 DISPLAY_SCALE = 20
 
 evil_factor = False
 speaking = False
 
-eye_mask = [21,22,23,26,27,28, 31,32,33,36,37,38, 41,42,43,46,47,48]
+eye_mask = []
+for x in range(60, 100):
+    eye_mask.append(x)
 
-mouth_mask = [72,73,74,75,76,77, 82,83,84,85,86,87]
+mouth_mask = []
+for y in range(6, 10 ):
+    for x in range(5, 14):
+        mouth_mask.append(y* ARRAY_WIDTH + x)
 
 def show_none(x,y,t):
         return [0,0,0]

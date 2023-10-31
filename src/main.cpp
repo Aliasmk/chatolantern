@@ -1,7 +1,7 @@
 #include <FastLED.h>
 
 
-#define WIDTH 10
+#define WIDTH 20
 #define HEIGHT 10
 #define NUM_LEDS WIDTH * HEIGHT
 
