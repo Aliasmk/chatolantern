@@ -8,3 +8,5 @@ The response is processed by a voice generation service called Coqui.ai, which c
 The AI prompt instructs GPT to pretend it is an Artificial Intelligence trapped inside a pumpkin. It also instructs it to take on both a benevolent and malevolent persona, as if the two are fighting eachother internally. 
 
 Depending on the persona and the state of the system, the LEDs take on different patterns and colors and illuminate through eyes and a mouth in the pumpkin.
+
+Add an OpenAI API key to your environment variables and run spooky.py to try it yourself on your computer!
