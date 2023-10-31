@@ -5,7 +5,9 @@ import queue
 import time
 import random
 
-import concurrent.futures
+from pygame import mixer
+
+
 import os
 import openai
 openai.log = "debug"
@@ -651,10 +653,19 @@ class App:
 
     is_listening = False 
     is_thinking = False
+
+    begin_sound = None
+    accept_sound = None
     
     def __init__(self, tkroot:tk.Tk):
         self.root = tkroot
         self.root.title("Chat 'o' Lantern")
+
+        mixer.init()
+        mixer.music.load("thinking.mp3")
+        mixer.music.set_volume(0.5)
+        self.begin_sound = mixer.Sound("begin.mp3")
+        self.accept_sound = mixer.Sound("accepted.mp3")
 
         self.frame = tk.Frame(self.root)
         self.frame.pack()
@@ -739,15 +750,19 @@ class App:
         if new_status:
             self.listen_button.configure(text="Stop Listening...")
             self.is_listening = True
+            mixer.Sound.play(self.begin_sound)
         else:
             self.listen_button.configure(text="Listen")
             self.is_listening = False
+            mixer.Sound.play(self.accept_sound)
 
     def on_entry_focus_change(self, event=None):
         if self.root.focus_get() == self.entry:
             self.is_listening = True
+            mixer.Sound.play(self.begin_sound)
         else :
             self.is_listening = False
+            mixer.Sound.play(self.accept_sound)
     
     def send_message(self, event=None):
         question = self.entry.get()
@@ -774,6 +789,12 @@ class App:
             show_control.switch_show("Rainbow")
         else:
             show_control.switch_show("TwoAxis")
+
+        if chat.is_thinking() and not mixer.music.get_busy():
+            mixer.music.play(-1)
+
+        elif not chat.is_thinking()and mixer.music.get_busy():
+            mixer.music.stop()
 
         if self.transcription_queue.empty() == False:
             self.entry.insert(tk.END, self.transcription_queue.get())
