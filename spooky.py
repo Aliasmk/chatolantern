@@ -21,6 +21,8 @@ from pydub.playback import play
 import io
 import re
 
+import datetime
+
 import speech_recognition as sr
 import sounddevice
 
@@ -195,6 +197,8 @@ class Chat_Interface():
     user_message_start = 0
 
     message_update_callback_list = []
+
+    log_file = None
     
     def __init__(self, prompt_file="prompt.md") -> None:
         self.api_key = os.getenv("OPENAI_API_KEY")
@@ -209,6 +213,8 @@ class Chat_Interface():
                 self.system_message = self.system_message.replace("\n", " ")
             except FileNotFoundError:
                 print("Prompt file not found, using default prompt")
+
+        
 
         self.reset_conversation()
         print("Using prompt: " + str(self.messages))
@@ -261,13 +267,23 @@ class Chat_Interface():
             self.messages.append({"role": "assistant", "content": example[1]})
 
         self.user_message_start = len(self.messages)
+        self.log_message("system", "Conversation reset")
 
     def add_message(self, role, message):
         self.messages.append({"role": role, "content": message})
+        self.log_message(role, message)
         for callback in self.message_update_callback_list:
             callback()
 
+    def log_message(self, role, message):
+        time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if self.log_file is not None:
+            self.log_file.write(f"[{time}] {role}: {message}\n")
+            self.log_file.flush()
+
     def __tick(self):
+        self.log_file = open("chat_log.txt", "a")
+
         print("Chat thread started")
         while self.stop_event.is_set() == False:
             # Wait for a question to be asked
@@ -283,6 +299,7 @@ class Chat_Interface():
             if time.time() - self.last_message_time > 30:
                 self.reset_conversation()
                 print("The previous conversation blows away in the wind")
+                
 
             self.add_message("user", question)
             answer = ""
@@ -310,7 +327,7 @@ class Chat_Interface():
 
             self.add_message("assistant", answer)
             
-
+        self.log_file.close()
         self.stop_event.clear()
         print("Chat thread stopped")
 
@@ -373,7 +390,7 @@ class Voice_Control(Thread):
             "language": "en",
             "voice_id": self.voice_ids.get(clip.persona),
             "text": clip.text,
-            "speed": 1.4
+            "speed": 1.2
         }
         headers = {
             "accept": "application/json",
@@ -623,6 +640,7 @@ show_list = {
 }
 
 
+
 output_points = np.zeros((ARRAY_HEIGHT, ARRAY_WIDTH, 3), np.uint8)
 try:
     arduino = NeoPixelController('/dev/serial0')
@@ -662,10 +680,10 @@ class App:
         self.root.title("Chat 'o' Lantern")
 
         mixer.init()
-        mixer.music.load("thinking.mp3")
+        mixer.music.load("./thinking.mp3")
         mixer.music.set_volume(0.5)
-        self.begin_sound = mixer.Sound("begin.mp3")
-        self.accept_sound = mixer.Sound("accepted.mp3")
+        self.begin_sound = mixer.Sound("./begin.wav")
+        self.accept_sound = mixer.Sound("./accepted.wav")
 
         self.frame = tk.Frame(self.root)
         self.frame.pack()
@@ -821,7 +839,7 @@ class App:
         self.photo = ImageTk.PhotoImage(image=self.image)
         self.label.configure(image=self.photo)
         
-        self.root.after(15, self.update)
+        self.root.after(100, self.update)
 
 root = tk.Tk()
 app = App(root)
