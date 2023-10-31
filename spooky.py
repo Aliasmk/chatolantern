@@ -4,13 +4,18 @@ from threading import Thread, Event, Lock
 import queue
 import time
 import random
+import os
 
 from pygame import mixer
 
-
-import os
 import openai
 openai.log = "debug"
+
+try:
+  import RPi.GPIO as gpio
+  is_rpi = True
+except (ImportError, RuntimeError):
+  is_rpi = False
 
 import tkinter as tk
 from PIL import Image, ImageTk
@@ -24,7 +29,7 @@ import re
 import datetime
 
 import speech_recognition as sr
-import sounddevice
+import sounddevice  # supresses a warning from speech_recognition on rpi
 
 import logging
 import http.client
@@ -517,7 +522,8 @@ class Speech_Recognition(Thread):
             r = sr.Recognizer()
             with sr.Microphone() as source:
                 print("Say something!")
-                audio = r.listen(source)
+                r.pause_threshold = 1.5
+                audio = r.listen(source, phrase_time_limit=10)
 
             for callback in self.listen_state_change_callback_list:
                 callback(False)
@@ -674,6 +680,8 @@ class App:
 
     begin_sound = None
     accept_sound = None
+
+    last_hardware_button_state = False
     
     def __init__(self, tkroot:tk.Tk):
         self.root = tkroot
@@ -684,6 +692,12 @@ class App:
         mixer.music.set_volume(0.5)
         self.begin_sound = mixer.Sound("./begin.wav")
         self.accept_sound = mixer.Sound("./accepted.wav")
+
+        global is_rpi
+        if is_rpi:
+            gpio.setmode(gpio.BCM)
+            gpio.setup(17, gpio.IN, pull_up_down=gpio.PUD_DOWN)
+            gpio.add_event_detect(17, gpio.RISING, callback=self.on_listen_button_pressed, bouncetime=200)
 
         self.frame = tk.Frame(self.root)
         self.frame.pack()
