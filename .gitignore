@@ -6,3 +6,4 @@
 .env
 chat_log.txt
 my_simple_cache.sqlite
+env/

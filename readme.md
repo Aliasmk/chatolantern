@@ -17,7 +17,11 @@ Thanks to my partners Myeesha (pumpkin carving) and Oleksa (internal mechanical 
 
 ## Run It Yourself!
 
-Add an [OpenAI API key](https://platform.openai.com/signup) (```OPENAI_API_KEY```) and a [Coqui.ai key](https://app.coqui.ai/auth/signup) (```COQUI_STUDIO_TOKEN```) to your environment variables, then run ```spooky.py``` to try it yourself with just your computer, using the debug chat and LED simulation GUI interface! These AI platforms are very easy to begin playing with and are inexpensive to run at small scales. Development of this project (comprising more than 500 chat messages for testing and debugging) costed less than $15 in API access for both GPT-4 and Coqui.
+1) Install dependencies with ```pip install -r requirements.txt```
+2) Add an [OpenAI API key](https://platform.openai.com/signup) (```OPENAI_API_KEY```) and a [Coqui.ai key](https://app.coqui.ai/auth/signup) (```COQUI_STUDIO_TOKEN```) to your environment variables, 
+3) Run ```spooky.py``` to try it yourself with just your computer, using the debug chat and LED simulation GUI interface! 
+
+These AI platforms are very easy to begin playing with and are inexpensive to run at small scales. Development of this project (comprising more than 500 chat messages for testing and debugging) costed less than $15 in API access for both GPT-4 and Coqui.
 
 ## Example Chat Logs
 The script records chat history. Here are a few particularly funny, interesting, or spooky ones! However, nothing compares to hearing it speak in the generated voice. The quality of the voice performance with Coqui has blown me away!
