@@ -11,11 +11,13 @@ Depending on the persona and the state of the system, the LEDs take on different
 
 The main script runs on a Raspberry Pi, and sends lighting array data to the Neopixel addressable LEDs via an Arduino UNO. On Halloween 2023, the system was powered using a 4S li-po battery and a buck converter so it could be taken around without being tethered to any power supply.
 
-Add an OpenAI API key (```OPENAI_API_KEY```) and a Coqui.ai key (```COQUI_STUDIO_TOKEN```) to your environment variables, then run spooky.py to try it yourself with just your computer debug chat and LED simulation interface!
-
 [Here's an example of Chat'o'Lantern in action!](https://www.youtube.com/watch?v=w8PVescC1vA)
 
 Thanks to my partners Myeesha (pumpkin carving) and Oleksa (internal mechanical design and eye/mouth diffusers) for their amazing work on this project!
+
+## Run It Yourself!
+
+Add an [OpenAI API key](https://platform.openai.com/signup) (```OPENAI_API_KEY```) and a [Coqui.ai key](https://app.coqui.ai/auth/signup) (```COQUI_STUDIO_TOKEN```) to your environment variables, then run spooky.py to try it yourself with just your computer debug chat and LED simulation interface! These platforms are very easy to begin playing with and are inexpensive to run at small scales. Development of this project (and hundreds of debug chat messages) costed less than $15 in API access for both GPT-4 and Coqui.
 
 ## Example Chat Logs
 The script records chat history. Here are a few particularly funny, interesting, or spooky ones! However, nothing compares to hearing it speak in the generated voice. The quality of the voice performance with Coqui has blown me away!
