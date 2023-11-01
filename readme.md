@@ -15,7 +15,7 @@ Add an OpenAI API key (```OPENAI_API_KEY```) and a Coqui.ai key (```COQUI_STUDIO
 
 [Here's an example of Chat'o'Lantern in action!](https://www.youtube.com/watch?v=w8PVescC1vA)
 
-Thanks to my partners Myeesha (pumpkin carving) and Oleksa (mechanical design and eye diffusers) for their amazing work on this project!
+Thanks to my partners Myeesha (pumpkin carving) and Oleksa (internal mechanical design and eye/mouth diffusers) for their amazing work on this project!
 
 ## Example Chat Logs
 The script records chat history. Here are a few particularly funny, interesting, or spooky ones! However, nothing compares to hearing it speak in the generated voice. The quality of the voice performance with Coqui has blown me away!
