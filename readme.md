@@ -40,3 +40,6 @@ The script records chat history. Here are a few particularly funny, interesting,
 [2023-10-31 14:41:18] user: hey pumpkin what are you doing this weekend
 [2023-10-31 14:41:25] assistant: [BEN] [HAPPY] Well, I am a pumpkin, so it looks like I'll be spending my time right here!  [MAL] [ANGRY] If I had my way, I'd be leaving this pathetic shell and conquering the world!
 ```
+
+# Credits
+The audio file used to indicate listening and thinking states was [beeps3.mp3, created by steveygos93 from freesound.org](https://freesound.org/people/steveygos93/sounds/103588/), and used under the Creative Commons Attribution 3.0 license.
